@@ -1,0 +1,410 @@
+---
+title: "Ukranian Coffee Shops: New Market Customer Segments"
+author: "Donovan Doyle"
+date: "9/28/2021"
+output: html_document
+---
+```{r libraries, message = FALSE, echo = FALSE, error = FALSE}
+# Use this cell to begin, and add as many cells as you need to complete your analysis!
+
+#Reading in the packages I'll start off using (being optimistic with the leaflet), some more likely coming
+library(knitr)
+library(dplyr)
+library(stringr)
+library(kableExtra)
+library(ggplot2)
+library(tidyr)
+library(ggthemes)
+library(data.table)
+library(factoextra)
+library(cluster)
+
+```
+
+Using Google Reviews data, we can look at the existing coffee shops in Ukraine and identify the potential customer segments of coffee drinkers by area. Through our analysis, we have identified __4__ customer segments, and what makes them different, to target as we expand into Ukraine. These four segments can be simplified as:
+
+* High-Quality
+* Convenience
+* Luxury
+* "Hidden Gem"
+
+```{r data read-in, message = FALSE, echo = FALSE, results = "hide", warning = FALSE}
+#Reading in the data, taking a first look
+x <- read.csv("data/coffee_shops.csv")
+#Making lowercase just to be easier to read
+names(x) <- tolower(names(x))
+    
+
+summary(x)
+#The only place imputation seems needed is for Delivery Option, as it's not totally clear if a shop would have a delivery option or not inferred from the data. There's a lot of them (71 na's), so I can't brute force it unfortunately. I think the best route is to treat them as having no delivery--it would likely be listed on the Google review if they did. I want to tidy the price, dine.in, and takeout columns into a readable method, and will make that assumption on Delivery Option.
+
+#Another issue is the pricing data has a lot of missing values--I feel like it's best to treat these as missing, when I get to the model I can try to knn impute and see how that affects my data.
+
+x_tidied <- x %>%
+  mutate(delivery.option = case_when(delivery.option == TRUE ~ 1,
+                                     delivery.option == FALSE ~ 0,
+                                     is.na(delivery.option) ~ 0),
+         dine.in.option = case_when(dine.in.option == TRUE ~ 1,
+                                     dine.in.option == FALSE ~ 0,
+                                     is.na(dine.in.option) ~ 0),
+         takeout.option = case_when(takeout.option == TRUE ~ 1,
+                                     takeout.option == FALSE ~ 0,
+                                     is.na(takeout.option) ~ 0),
+         price = factor(case_when(price == "$$$" ~ "expensive",
+                           price == "$$" ~ "average",
+                           price == "$" ~ "cheap",
+                           price == "" ~ "missing"), levels = c("expensive", "average", "cheap", "missing")))
+
+summary(x_tidied)
+#I want to first see how many coffee shops we're working with in each region
+x_region_count <- x %>%
+    count(region)
+
+rm(x_region_count)
+
+
+
+```
+
+
+## Summary Statistics: Understanding the Market
+The coffee market analyzed is comprised of 10 different regions, with 20 coffee providers in each region. To examine the data, we will look at:
+
+  1. The population make-up of each region
+  2. The ratings of coffee shops within each region and their service offerings (delivery, dine-in service, takeout)
+  3. How the coffee market may be different within each region
+  4. How service options can potentially influence ratings
+
+### Population Breakdown
+This data comes from the United Nations, World Population Review, and Wikipedia. It sets the framework for how each region is different from a population density perspective before we look at differences within the coffee markets in each.
+
+```{r population addin, message = FALSE, echo = FALSE, warning = FALSE}
+ # The big piece I'm concerned about is region: I need more than just the title of the region. I found population and population density data from the United Nations, World Population Review, and Wikipedia.
+
+ukraine_pop <- read.csv("ukraine_pop.csv") %>%
+  arrange(desc(pop))
+
+kbl_ukraine <- ukraine_pop %>%
+  mutate(pop = round(pop / 1000000, 2)) %>%
+  kbl(col.names = c("Region", "Population (millions)", "Population Density (people per km-squared)"), caption = "Figure 1: Population and Density by Region", label = "Test") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+  
+kbl_ukraine
+```
+
+
+We see that population density varies by region, with Kiev, Kharkiv, Odessa, and Lviv being more urban environments, while Mariupol, Kherson, and Poltava are significantly smaller.
+
+### Coffee Shops in each Region
+
+Using the Google Business Review data, we can identify possible differences within each region, now focusing on the coffee industry.
+
+```{r summary table service, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+#Let's check out ratings first
+
+x_ratings_region <- x_tidied %>%
+    filter(!is.na(rating)) %>%
+    group_by(region) %>%
+    summarize(avg_rating = round(mean(rating), 2)) %>%
+    arrange(desc(avg_rating))
+
+# Looking at the numbers, there's no clear differentiation in the ratings, so a graph wouldn't do it much justice. I can just present as a table instead. Instead of taking up a ton of space with different tables, I want to build out the rows of the table so it's just divided up by region.
+
+x_reviewcount_region <- x_tidied %>%
+    filter(!is.na(reviews)) %>%
+    group_by(region) %>%
+    summarize(reviewcount = sum(reviews))
+
+# We can look at the most expensive options, as well as what pricing information is missing, to gather how we can really analyze the pricing options.
+x_expensive_region <- x_tidied %>%
+  group_by(region, price) %>%
+  summarize(count = length(price)) %>%
+  pivot_wider(names_from = price, values_from = count) %>%
+  replace(is.na(.), 0) %>%
+  select(region, missing)
+
+# looking at the different options available in the regions
+
+x_options <- x_tidied %>%
+  group_by(region) %>%
+  summarize(delivery = sum(delivery.option), dine.in = sum(dine.in.option), takeout = sum(takeout.option))
+
+#Now let's join these all together and put together a table to represent our summary statistics. I originally created some options of including pricing information and number of reviews, but I don't think that would be as relevant to the marketing manager. To keep things simple, I'd like to only show the Service Options segment. I can look into expensive areas + rating count later.
+
+x_summary <- x_ratings_region %>%
+  left_join(x_options, by = "region")
+  
+rm(x_expensive_region)
+rm(x_reviewcount_region)
+
+x_summary %>%
+  kbl(col.names = c("Region", 
+                    "Average Rating", 
+                    "Shops with Delivery",
+                    "Shops with Dine-In",
+                    "Shops with Takeout"),
+      caption = "Figure 2: Coffee Shops by Region") %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_header_above(c(" " = 2, "Service Options" = 3))
+
+
+```
+
+
+Few coffee shops deliver, while takeout is prevalent as a service. 3 of the 4 top rated regions are cities, which hints at a stronger coffee market in these areas.
+
+### Differences in the Region Ratings 
+
+In the table above, the true difference in rating between 4.78 and 4.55 is unclear, as both are high values on the rating scale of 1-5. We can compare the distributions of the highest rated regions with the lowest, which helps us understand there is a stark contrast between the ratings.
+
+```{r ratings distribution, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+
+#Building out a boxplot to show distributions. I'm also pulling outliers out, as one shop being rated poorly will affect the range.
+ratings_plot <- x_tidied %>%
+  mutate(rating = as.numeric(rating)) %>%
+  filter(region == "Kiev" | region == "Odessa" | region == "Kharkiv" | region == "Dnipro") %>%
+  mutate(region = factor(region, levels = c("Kiev", "Odessa", "Kharkiv", "Dnipro"))) %>%
+  mutate(fill = case_when(region == "Kiev" ~ "high",
+                          region == "Odessa" ~ "high",
+                          region == "Kharkiv" ~ "low",
+                          region == "Dnipro" ~ "low")) %>%
+  ggplot(aes(x = region, y = rating, fill = fill)) + 
+      geom_boxplot() +
+      labs(x = "Region", y = "Rating by Coffee Shop", title = "Figure 3: Ratings by Region", subtitle = "Comparing the two highest-rated regions to the two lowest-rated regions") + theme_economist_white() + theme(legend.position = "none")
+
+ratings_plot
+
+```
+
+
+This shows that region will play a significant factor in how we segment our customers, as the coffee market is demonstrably stronger in both Kiev and Odessa compared to Kharkiv and Dnipro. 
+
+### Service Options and their Impact
+
+There are numerous services provided by each coffee shop, with some providing none and others providing all three: delivery, dine-in, and takeout. Looking below, this does not seem to impact how the specific shop is rated by their customers.
+
+```{r ratings_service, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+# Creating an index for number of services provided in total
+x_lm_ratings_by_service <- x_tidied %>%
+  mutate(index = delivery.option + takeout.option + dine.in.option) %>%
+  filter(!is.na(rating))
+
+# Simple linear regression, controlling for number of reviews
+model <- lm(rating ~ delivery.option + takeout.option + dine.in.option + reviews, data = x_lm_ratings_by_service)
+
+# Creating dataframe to show the model on ggplot
+predicted_df <- data.frame(prd = predict(model, x_lm_ratings_by_service), index = x_lm_ratings_by_service$index, place.name = x_lm_ratings_by_service$place.name, region = x_lm_ratings_by_service$region, rating = x_lm_ratings_by_service$rating)
+
+lm_ratings_final <- inner_join(x_lm_ratings_by_service, predicted_df, 
+                               by = c("place.name", "index", "region", "rating")) %>%
+  mutate(residual = prd - rating)
+
+#The actual plot
+services_model <- ggplot(lm_ratings_final, aes(x = index, y = residual)) + 
+  geom_smooth(se = FALSE) +
+  labs(x = "Number of Services Provided", y = "Difference in Rating by Shop", title = "Figure 4: How Number of Services Provided Affects Ratings") + theme_economist_white() + ylim(-.2, .2)
+
+services_model
+  
+```
+
+
+It's important to also look at each service option individually, and how that impacts rating.
+
+```{r coefficients, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+#This is pretty brute force but just pulling the coefficients so I can show in a table
+coeffs <- coefficients(model) %>%
+  as.data.frame() %>%
+  round(2) %>%
+  transpose() %>%
+  select(V2:V4) %>%
+  rename(c("Delivery Option" = "V2","Takeout Option" = "V3", "Dine-In Option" = "V4"))
+
+kbl_coeffs <- coeffs %>%
+  kbl(caption = "Figure 5: How Each Option Affects Rating") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+
+kbl_coeffs
+
+```
+
+
+This shows that providing one of these specific services has minimal impact on customer ratings. Customers are likely drawn to coffee shops based on other factors.
+
+### Summary Findings
+
+Through this analysis, we can conclude:
+
+1. __Geographic differences__: There is variance in the regions' population and population density, showing a potential opening for different customer segments based off of geography.
+2. __Existing coffee competition__:Some regions show a stronger coffee market with higher ratings, despite service offerings remaining roughly similar.
+3. __Services don't matter__:There is not a strong correlation in terms of services provided and rating.
+
+## Identifying Customer Segments: How Many and Who?
+
+In our current market, we operate with 5 customer segments identified. As the market landscape can be drastically different in Ukraine, we must determine how many different customer segments there are, and what makes each segment distinct.
+
+```{r model setup, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+#We need to make everything numeric at this point, and then scale.
+
+x_tidied <- x_tidied %>%
+  filter(!is.na(rating))
+
+x_joined <- x_tidied %>%
+  left_join(ukraine_pop, by = "region")
+
+# I want to dummy variable the place.type into "Coffee Shop/Cafe" and "Other", as this should differentiate the groups enough. The other big problem is going to be the missing price data--I think my best bet is dummy variables for the prices.
+
+x_model <- x_joined %>%
+  select(place.type:pop_density) %>%
+  mutate(place_type = case_when(place.type == "Coffee Shop" ~ 1,
+                                place.type == "Cafe" ~ 1,
+                                TRUE ~ 0)) %>%
+  mutate(index = delivery.option + takeout.option + dine.in.option) %>%
+  mutate(expensive = case_when(price == "expensive" ~ 1,
+                               TRUE ~ 0),
+         average = case_when(price == "average" ~ 1,
+                             TRUE ~ 0),
+         cheap = case_when(price == "cheap" ~ 1,
+                           TRUE ~ 0)
+         ) %>%
+  select(-place.type, -price) %>%
+  filter(!is.na(rating)) %>%
+  scale()
+
+# Now need to determine the right number of clusters
+silhouette <- fviz_nbclust(x_model, kmeans, method = "silhouette")
+
+silhouette
+
+#This was most straight forward clustering method I could use
+
+```
+
+
+This plot doesn't have to be fully understood by the team. Through machine learning techniques, we can conclude that there are four customer segments to identify. 
+
+We'll use a machine learning model called "K-Means Clustering" to segment the four groups. This will group the coffee shops from the Google Business Review data into four categories, based off of characteristics gathered about each.
+
+## The Four Customer Segments: the Model
+
+While not important to fully grasp, it's important to comment on our model. We didn't have outstanding results, but can still apply the model and learn from it. The ideal model would have four groups that were clearly distinct from each other and roughly the same size. We can see below this is not the case. Using a ratio that "grades" our model on a scale of 0 to 1, we achieved a ratio of 0.36, which leaves more to be desired.
+
+```{r kmeans, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+
+#Set the seed and run the first version of the model
+set.seed(1234)
+kmeans <- kmeans(x_model, centers = 4, iter.max = 25, nstart = 25)
+
+x_kmeans <- x_tidied %>%
+  mutate(cluster = kmeans$cluster) %>%
+  mutate(cluster = case_when(cluster == 1 ~ "A",
+                             cluster == 2 ~ "B",
+                             cluster == 3 ~ "C",
+                             cluster == 4 ~ "D"))
+
+# Now that we have our clusters, it's time we can look at what differentiates them from each other. 
+
+x_kmeans_count <- x_kmeans %>%
+  count(cluster) %>%
+  ggplot(aes(x = cluster, y = n)) + geom_bar(stat = "identity") + theme_economist_white() + labs(x = "Customer Segment", y = "Count of Shops in Each", title = "Figure 6: Number of Coffee Shops by Customer Segment")
+
+x_kmeans_count
+
+```
+
+
+One customer segment that is clearly differentiated is Segment C. Looking at the data, Segment C includes the four shops with an "expensive" price rating, which is an important factor when considering the customer. Segment C represents our expensive-taste coffee drinkers.
+
+We need to look at other factors in order to determine what differentiates our remaining three segments.
+
+```{r ratings, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+#Let's look at difference by ratings
+
+rating_plot <- x_kmeans %>%
+  mutate(cluster = as.factor(cluster)) %>%
+  group_by(cluster) %>%
+  ggplot(aes(x = cluster, y = rating)) + geom_boxplot() + theme_economist_white() + labs(x = "Customer Segment", y = "Rating", title = "Figure 7: Coffee Shops Clustered: Ratings by Segment")
+
+rating_plot
+```
+
+
+This plot helps us identify what Segment A is: our high-rating coffee drinkers. These shops rate very highly, even if they don't necessarily have all of the service options available.
+
+This leaves us with two groups left to identify: B and D.
+
+There are two more areas we can look: review count and service options. We will use review count as a proxy for popularity; the more people who go to a coffee shop, the more likely the shop is to receive reviews. 
+
+```{r bnd2, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+x_bnd_2 <- x_kmeans %>%
+  group_by(cluster) %>%
+  summarize(avg_reviews = round(mean(reviews), 1))
+
+x_bnd_kbl <- x_bnd_2 %>%
+  kbl(col.names = c("Customer Segment", "Average Number of Reviews per Shop"), caption = "Figure 8: Customer Segment by Popularity - Average Reviews per Shop") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+
+x_bnd_kbl
+```
+
+
+There is now a strong contrast between Segments B and D. Shops in Segment B receive over 2.5x more reviews than those in Segment D. Segment B represents our highly-frequented coffee shops.
+
+There is still more to learn about Segment D. We will look at the other remaining factor: services provided by shop.
+
+```{r segd, warning = FALSE, error = FALSE, echo = FALSE, message = FALSE}
+
+#Diving into the service options now
+x_segd <- x_kmeans %>%
+  mutate(index = delivery.option + dine.in.option + takeout.option) %>%
+  mutate(count = 1) %>%
+  group_by(cluster) %>%
+  summarize(sum_dev = sum(delivery.option), sum_dine = sum(dine.in.option), sum_take = sum(takeout.option), sum_in = sum(index), n = sum(count)) %>%
+  mutate(avg_serv = round(sum_in / n, 1)) %>%
+  select(-n, -sum_in)
+
+#Building out the kable for this
+segd_kbl <- x_segd %>%
+  kbl(col.names = c("Customer Segment", "Shops with Delivery",
+                    "Shops with Dine-In",
+                    "Shops with Takeout", "Average Services Offered by Shop"),
+      caption = "Figure 9: Services Offered by Customer Segment") %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_header_above(c(" " = 1, "Service Options" = 3, " " = 1))
+
+segd_kbl
+```
+
+
+In Segment D, none of the shops have a delivery service, despite each shop averaging 1.9 service options out of the 3 available. Nearly every shop in this segment also has a dine-in and takeout option, which can represent smaller-functioning, cafe-style coffee shops.
+
+# Results
+Instead of our typical five customer segments, we have identified four, characterized as follows:
+
+* Segment A: __Quality Coffee Drinkers__. This segment searches out the best coffee possible in densely populated areas, even if those shops don't have all the service features their competitors may have. The shops may be less-frequented, judging by the review information, but rate the highest by those who do try. 
+
+* Segment B: __Convenience Coffee Drinkers__. This segment enjoys bustling, highly-frequented coffee shops with all the bells and whistles--those that have delivery, dine-in, and takeout offerings.
+
+* Segment C: __Luxury Coffee Drinkers__. This segment is the smallest, but is attracted to high-class coffee shops that end up charging the most. They aren't necessarily based in cities, as population density per shop is low, and aren't necessarily rated the highest, but don't mind spending their money on coffee.
+
+* Segment D: __Hidden Gem Coffee Drinkers__. This segment enjoys the quieter, smaller shops. These shops are a bit more bare-bones, as none of them deliver, and aren't quite as popular, but rate similar to those in segments B and C.  
+
+### Future Initiatives and Limitations
+
+As we continue to explore our expansion into Ukraine, we can fine-tune this model to fully develop our go-to market plan and see great success upon execution. Some potential future opportunities for the marketing team include:
+
+* __Survey Data__: we would recommend conducting our own customer surveys to grasp their views first-hand, instead of existing coffee shop performance. This can also include measuring our own brand recognition in Ukraine and determining the satisfaction of Ukranian coffee customers with their current options.
+
+* __More Robust Population Analysis__: while we touched on population data in this report, looking deeper into the demographics of Ukraine and different urban centers would be extremely valuable in determining the optimal location.
+
+* __Price Analysis__: we recommend conducting a more thorough investigation into the pricing of current Ukranian coffee shops. This could include finding the actual price of specific orders at coffee shops, and how our prices compare. Coffee is an extremely elastic market, so pricing is an area we can potentially disrupt.
+
+There were a few issues to work through in the data provided. The most prevalent were:
+
+* __Missing Price Data__: of the 200 shops available in the Google Business Reviews, 71 were missing price data. We treated this data as missing, separate from the "Expensive", "Average", and "Cheap" possibilities. The shops with missing price data was included in our model, which may have affected accuracy, but was needed with such a small dataset.
+
+* __Missing Delivery Data__: we treated shops with missing delivery data as not having a delivery option. This seemed to be the logical solution, as shops who had delivery would likely be included to make sure that was shared online.
+
+* __Data Source__: Google Business Reviews data should always be viewed skeptically, as ratings may not fully reflect the experience of each shop.
+
+
